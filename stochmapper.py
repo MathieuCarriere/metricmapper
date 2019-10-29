@@ -12,6 +12,7 @@ from sklearn.cluster         import DBSCAN, AgglomerativeClustering
 from sklearn.metrics         import pairwise_distances
 from scipy.spatial.distance  import directed_hausdorff
 from scipy.sparse            import csgraph
+from scipy.stats             import entropy
 from sklearn.neighbors       import KernelDensity, kneighbors_graph, radius_neighbors_graph, NearestNeighbors
 from ot.bregman              import sinkhorn2
 
@@ -23,12 +24,83 @@ except ImportError:
 
 class EntropyRegularizedWasserstein(BaseEstimator, TransformerMixin):
 
-    def __init__(self, epsilon=1e-4):
+    def __init__(self, epsilon=1e-4, num_bins=10, bnds=(0,1)):
         self.epsilon = epsilon
+        self.n_bins, self.bnds = num_bins, bnds
 
     def compute_distance(self, d1, d2):
-        return sinkhorn2(a=np.ones(len(d1))/len(d1), b=np.ones(len(d2))/len(d2), M=np.abs(np.reshape(d1,[-1,1])-np.reshape(d2,[1,-1])), reg=self.epsilon)
+        h1, e1 = np.histogram(d1, bins=self.n_bins, range=self.bnds)
+        h2, e2 = np.histogram(d2, bins=self.n_bins, range=self.bnds)
+        h1 = h1/np.sum(h1)
+        h2 = h2/np.sum(h2)
+        c1 = (e1[:-1] + e1[1:])/2
+        c2 = (e2[:-1] + e2[1:])/2
+        return sinkhorn2(a=h1, b=h2, M=np.abs(np.reshape(c1,[-1,1])-np.reshape(c2,[1,-1])), reg=self.epsilon)
+    
+    def compute_matrix(self, D):
+        num_dist = len(D)
+        H, C = [], []
+        for i in range(num_dist):
+            h, e = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
+            c = (e[:-1] + e[1:])/2
+            h = h/np.sum(h)
+            H.append(h)
+            C.append(c)
+        M = np.zeros([num_dist, num_dist])
+        for i in range(num_dist):
+            print(i)
+            for j in range(i+1, num_dist):
+                M[i,j] = sinkhorn2(a=H[i], b=H[j], M=np.abs(np.reshape(C[i],[-1,1])-np.reshape(C[j],[1,-1])), reg=self.epsilon, numItermax=10)
+                M[j,i] = M[i,j]
+        return M
 
+class KullbackLeiblerDivergence(BaseEstimator, TransformerMixin):
+    
+    def __init__(self, num_bins=10, bnds=(0,1)):
+        self.n_bins, self.bnds = num_bins, bnds
+        
+    def compute_distance(self, d1, d2):
+        h1, _ = np.histogram(d1, bins=self.n_bins, range=self.bnds)
+        h2, _ = np.histogram(d2, bins=self.n_bins, range=self.bnds)
+        h1 = h1/np.sum(h1)
+        h2 = h2/np.sum(h2)
+        return entropy(h1, h2)
+    
+    def compute_matrix(self, D):
+        num_dist = len(D)
+        H = []
+        for i in range(num_dist):
+            h, _ = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
+            h = h/np.sum(h)
+            H.append(h)
+        M = np.zeros([num_dist, num_dist])
+        for i in range(num_dist):
+            for j in range(i+1, num_dist):
+                M[i,j] = entropy(H[i], H[j])
+                M[j,i] = M[i,j]
+        return M
+    
+class EuclideanDistance(BaseEstimator, TransformerMixin):
+    
+    def __init__(self, num_bins=10, bnds=(0,1)):
+        self.n_bins, self.bnds = num_bins, bnds
+        
+    def compute_distance(self, d1, d2):
+        h1, _ = np.histogram(d1, bins=self.n_bins, range=self.bnds)
+        h2, _ = np.histogram(d2, bins=self.n_bins, range=self.bnds)
+        h1 = h1/np.sum(h1)
+        h2 = h2/np.sum(h2)
+        return np.linalg.norm(h1-h2)
+    
+    def compute_matrix(self, D):
+        num_dist = len(D)
+        H = []
+        for i in range(num_dist):
+            h, _ = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
+            h = h/np.sum(h)
+            H.append(np.reshape(h, [1,-1]))
+        return pairwise_distances(np.vstack(H))
+    
 class AgglomerativeCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, n_patches=10, threshold=1.):
