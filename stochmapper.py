@@ -8,7 +8,7 @@ import itertools
 
 from sklearn.base            import BaseEstimator, TransformerMixin
 from sklearn.preprocessing   import LabelEncoder
-from sklearn.cluster         import DBSCAN, AgglomerativeClustering
+from sklearn.cluster         import DBSCAN, AgglomerativeClustering, KMeans
 from sklearn.metrics         import pairwise_distances
 from scipy.spatial.distance  import directed_hausdorff
 from scipy.sparse            import csgraph
@@ -21,6 +21,22 @@ try:
 
 except ImportError:
     print("Gudhi not found: StochasticMapperComplex will not work")
+
+class Histogram(BaseEstimator, TransformerMixin):
+
+    def __init__(self, num_bins=10, bnds=(0,1)):
+        self.n_bins, self.bnds = num_bins, bnds
+
+    def compute_histograms(self, D):
+        num_dist = len(D)
+        H, C = [], []
+        for i in range(num_dist):
+            h, e = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
+            c = (e[:-1] + e[1:])/2
+            h = h/np.sum(h)
+            H.append(h)
+            C.append(c)
+        return H, C
 
 class EntropyRegularizedWasserstein(BaseEstimator, TransformerMixin):
 
@@ -39,13 +55,7 @@ class EntropyRegularizedWasserstein(BaseEstimator, TransformerMixin):
     
     def compute_matrix(self, D):
         num_dist = len(D)
-        H, C = [], []
-        for i in range(num_dist):
-            h, e = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
-            c = (e[:-1] + e[1:])/2
-            h = h/np.sum(h)
-            H.append(h)
-            C.append(c)
+        H, C = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
         M = np.zeros([num_dist, num_dist])
         for i in range(num_dist):
             print(i)
@@ -68,11 +78,7 @@ class KullbackLeiblerDivergence(BaseEstimator, TransformerMixin):
     
     def compute_matrix(self, D):
         num_dist = len(D)
-        H = []
-        for i in range(num_dist):
-            h, _ = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
-            h = h/np.sum(h)
-            H.append(h)
+        H, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
         M = np.zeros([num_dist, num_dist])
         for i in range(num_dist):
             for j in range(i+1, num_dist):
@@ -93,12 +99,7 @@ class EuclideanDistance(BaseEstimator, TransformerMixin):
         return np.linalg.norm(h1-h2)
     
     def compute_matrix(self, D):
-        num_dist = len(D)
-        H = []
-        for i in range(num_dist):
-            h, _ = np.histogram(D[i], bins=self.n_bins, range=self.bnds)
-            h = h/np.sum(h)
-            H.append(np.reshape(h, [1,-1]))
+        H, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
         return pairwise_distances(np.vstack(H))
     
 class AgglomerativeCover(BaseEstimator, TransformerMixin):
@@ -123,6 +124,30 @@ class AgglomerativeCover(BaseEstimator, TransformerMixin):
 
         return binned_data
 
+class BallCover(BaseEstimator, TransformerMixin):
+
+    def __init__(self, radius=1.):
+        self.radius = radius
+
+    def compute_cover(self, M):
+        num_pts = M.shape[0]
+        binned_data = {}
+        n_patch, integrated_pts, centers = 0, [], []
+        while len(integrated_pts) < num_pts:
+            if len(centers) == 0:
+                new_center = 0
+            else:
+                left = np.setdiff1d(np.arange(num_pts), np.array(centers))
+                new_center = left[np.argmax(np.sum(M[left, :][:, np.array(centers)], axis=1), axis=0)]
+            centers.append(new_center)
+            ball_pts = np.argwhere(M[new_center,:] <= self.radius)
+            ball = np.squeeze(ball_pts) if ball_pts.shape[0] > 1 else ball_pts[0,:]  
+            binned_data[n_patch] = ball
+            integrated_pts = np.unique(np.concatenate([integrated_pts, ball])) 
+            n_patch += 1
+
+        return binned_data
+
 class VoronoiCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, n_patches=10, threshold=1.):
@@ -133,14 +158,51 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
         # Partition data with Voronoi cover
         germs = np.random.choice(M.shape[0], self.n_patches, replace=False)
         labels = np.argmin(M[germs,:], axis=0)
-        binned_data = {i: [] for i in range(self.n_patches)}
-        for i in range(M.shape[0]):
-            binned_data[labels[i]].append(i)
+        binned_data = {}
+        for i, l in enumerate(labels):
+            try:
+                binned_data[l].append(i)
+            except KeyError:
+                binned_data[l] = [i]
 
         # Thicken clusters so that they overlap
-        for i in range(self.n_patches):
+        for i in binned_data.keys():
             pts_cluster, pts_others = np.reshape(np.argwhere(labels == i), [-1]), np.reshape(np.argwhere(labels != i), [-1])
+            
             pts_in_offset = pts_others[np.reshape(np.argwhere(M[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
+            for p in pts_in_offset:
+                binned_data[i].append(p)
+
+        return binned_data
+
+class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_patches=10, threshold=1., num_bins=10, bnds=(0,1)):
+        self.n_patches, self.threshold = n_patches, threshold
+        self.n_bins, self.bnds = num_bins, bnds
+
+    def compute_cover(self, D):
+
+        # Compute histograms
+        num_dist = len(D)
+        Y, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
+        Y = np.vstack(Y)
+        DY = pairwise_distances(Y)
+
+        # Euclidean KMeans on histograms
+        km = KMeans(n_clusters=self.n_patches).fit(Y)
+        print(np.unique(km.labels_))
+        binned_data = {}
+        for i, l in enumerate(km.labels_):
+            try:
+                binned_data[l].append(i)
+            except KeyError:
+                binned_data[l] = [i]
+
+        # Thicken clusters so that they overlap
+        for i in binned_data.keys():
+            pts_cluster, pts_others = np.reshape(np.argwhere(km.labels_ == i), [-1]), np.reshape(np.argwhere(km.labels_ != i), [-1])
+            pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
             for p in pts_in_offset:
                 binned_data[i].append(p)
 
