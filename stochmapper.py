@@ -6,15 +6,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import itertools
 
-from sklearn.base            import BaseEstimator, TransformerMixin
-from sklearn.preprocessing   import LabelEncoder
-from sklearn.cluster         import DBSCAN, AgglomerativeClustering, KMeans
-from sklearn.metrics         import pairwise_distances
-from scipy.spatial.distance  import directed_hausdorff
-from scipy.sparse            import csgraph
-from scipy.stats             import entropy
-from sklearn.neighbors       import KernelDensity, kneighbors_graph, radius_neighbors_graph, NearestNeighbors
-from ot.bregman              import sinkhorn2
+from sklearn.base             import BaseEstimator, TransformerMixin
+from sklearn.preprocessing    import LabelEncoder
+from sklearn.cluster          import DBSCAN, AgglomerativeClustering, KMeans
+from sklearn.metrics          import pairwise_distances
+from sklearn.metrics.pairwise import euclidean_distances
+from scipy.spatial.distance   import directed_hausdorff
+from scipy.sparse             import csgraph
+from scipy.stats              import entropy
+from sklearn.neighbors        import KernelDensity, kneighbors_graph, radius_neighbors_graph, NearestNeighbors
+from ot.bregman               import sinkhorn2
 
 try:
     import gudhi as gd
@@ -106,6 +107,7 @@ class AgglomerativeCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, n_patches=10, threshold=1.):
         self.n_patches, self.threshold = n_patches, threshold
+        self.mode = "metric"
 
     def compute_cover(self, M):
 
@@ -128,6 +130,7 @@ class BallCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, radius=1.):
         self.radius = radius
+        self.mode = "metric"
 
     def compute_cover(self, M):
         num_pts = M.shape[0]
@@ -152,6 +155,7 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, n_patches=10, threshold=1.):
         self.n_patches, self.threshold = n_patches, threshold
+        self.mode = "metric"
 
     def compute_cover(self, M):
 
@@ -177,21 +181,25 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
 
 class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
 
-    def __init__(self, n_patches=10, threshold=1., num_bins=10, bnds=(0,1)):
+    def __init__(self, n_patches=10, threshold=1., histo=True, num_bins=10, bnds=(0,1)):
         self.n_patches, self.threshold = n_patches, threshold
-        self.n_bins, self.bnds = num_bins, bnds
+        self.histo, self.n_bins, self.bnds = histo, num_bins, bnds
+        self.mode = "embedding"
 
     def compute_cover(self, D):
 
         # Compute histograms
-        num_dist = len(D)
-        Y, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
-        Y = np.vstack(Y)
+        if self.histo:
+            num_dist = len(D)
+            Y, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
+            Y = np.vstack(Y)
+        else:
+            Y = D
+
         DY = pairwise_distances(Y)
 
         # Euclidean KMeans on histograms
         km = KMeans(n_clusters=self.n_patches).fit(Y)
-        print(np.unique(km.labels_))
         binned_data = {}
         for i, l in enumerate(km.labels_):
             try:
@@ -202,6 +210,62 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
         # Thicken clusters so that they overlap
         for i in binned_data.keys():
             pts_cluster, pts_others = np.reshape(np.argwhere(km.labels_ == i), [-1]), np.reshape(np.argwhere(km.labels_ != i), [-1])
+            pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
+            for p in pts_in_offset:
+                binned_data[i].append(p)
+
+        return binned_data
+
+class kPDTMCover(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_patches=10, h=10, threshold=1., tol=1e-4, histo=True, num_bins=10, bnds=(0,1)):
+        self.n_patches, self.threshold, self.h, self.tolerance = n_patches, threshold, h, tol
+        self.histo, self.n_bins, self.bnds = histo, num_bins, bnds
+        self.mode = "embedding"
+
+    def compute_cover(self, D):
+        
+        # Compute histograms
+        if self.histo:
+            num_dist = len(D)
+            Y, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
+            Y = np.vstack(Y)
+        else:
+            Y = D
+
+        curr_patches = Y[np.random.choice(np.arange(len(Y)), size=self.n_patches, replace=False), :]
+        criterion = np.inf
+        while criterion > self.tolerance:
+            dists = euclidean_distances(curr_patches, Y)
+            means, variances = [], []
+            for t in range(self.n_patches):
+                ball_idxs = np.argpartition(dists[t,:], self.h)[:self.h]
+                M = np.reshape(Y[ball_idxs,:].mean(axis=0), [1,-1])
+                V = np.square(euclidean_distances(M, Y[ball_idxs,:])).sum()
+                means.append(M)
+                variances.append(V)
+            Q = np.argmin(np.square(euclidean_distances(Y, np.vstack(means))) + np.reshape(np.array(variances), [1,-1]), axis=1)
+            new_curr_patches = []
+            for t in range(self.n_patches):
+                if len(np.argwhere(Q==t)) > 0:
+                    new_curr_patches.append(np.reshape(Y[np.argwhere(Q==t)[:,0],:].mean(axis=0), [1,-1]))
+                else:
+                    new_curr_patches.append(curr_patches[t:t+1,:])
+            new_curr_patches = np.vstack(new_curr_patches)
+            criterion = np.sqrt(np.square(new_curr_patches - curr_patches).sum(axis=1)).max(axis=0)
+            curr_patches = new_curr_patches
+
+        binned_data = {}
+        for i in range(len(Q)):
+            try:
+                binned_data[Q[i]].append(i)
+            except KeyError:
+                binned_data[Q[i]] = [i]
+
+        # Thicken clusters so that they overlap
+        DY = pairwise_distances(Y)
+        for i in binned_data.keys():
+            pts_cluster, pts_others = np.reshape(np.argwhere(Q == i), [-1]), np.reshape(np.argwhere(Q != i), [-1])
             pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
             for p in pts_in_offset:
                 binned_data[i].append(p)
@@ -255,7 +319,10 @@ class StochasticMapperComplex(BaseEstimator, TransformerMixin):
                     codomain_distances[j,i] = codomain_distances[i,j]
 
         # Compute cover
-        binned_data = self.cover.compute_cover(codomain_distances)
+        if self.cover.mode == "metric":
+            binned_data = self.cover.compute_cover(codomain_distances)
+        if self.cover.mode == "embedding":
+            binned_data = self.cover.compute_cover(self.distributions)
 
         # Initialize the cover map, that takes a point and outputs the clusters to which it belongs
         cover, clus_base = [[] for _ in range(num_pts)], 0
