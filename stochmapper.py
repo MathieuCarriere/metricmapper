@@ -15,13 +15,23 @@ from scipy.spatial.distance   import directed_hausdorff
 from scipy.sparse             import csgraph
 from scipy.stats              import entropy
 from sklearn.neighbors        import KernelDensity, kneighbors_graph, radius_neighbors_graph, NearestNeighbors
-from ot.bregman               import sinkhorn2
+from ot.bregman               import sinkhorn2, barycenter
+from ot.lp                    import wasserstein_1d
 
 try:
     import gudhi as gd
-
+    import sklearn_tda as sktda
 except ImportError:
     print("Gudhi not found: StochasticMapperComplex will not work")
+
+def infer_distributions_from_neighborhood(real, X, threshold=1., domain="point cloud"):
+    num_pts, distributions = len(X), []
+    pdist = X if domain == "distance matrix" else pairwise_distances(X)
+    for i in range(num_pts):
+        distrib = np.squeeze(np.argwhere(pdist[i,:] <= threshold))
+        np.random.shuffle(distrib)
+        distributions.append([real[n] for n in distrib])
+    return distributions
 
 class Histogram(BaseEstimator, TransformerMixin):
 
@@ -59,9 +69,33 @@ class EntropyRegularizedWasserstein(BaseEstimator, TransformerMixin):
         H, C = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
         M = np.zeros([num_dist, num_dist])
         for i in range(num_dist):
-            print(i)
             for j in range(i+1, num_dist):
                 M[i,j] = sinkhorn2(a=H[i], b=H[j], M=np.abs(np.reshape(C[i],[-1,1])-np.reshape(C[j],[1,-1])), reg=self.epsilon, numItermax=10)
+                M[j,i] = M[i,j]
+        return M
+
+class Wasserstein1D(BaseEstimator, TransformerMixin):
+
+    def __init__(self, p=1, num_bins=10, bnds=(0,1)):
+        self.p = p
+        self.n_bins, self.bnds = num_bins, bnds
+
+    def compute_distance(self, d1, d2):
+        h1, e1 = np.histogram(d1, bins=self.n_bins, range=self.bnds)
+        h2, e2 = np.histogram(d2, bins=self.n_bins, range=self.bnds)
+        h1 = h1/np.sum(h1)
+        h2 = h2/np.sum(h2)
+        c1 = (e1[:-1] + e1[1:])/2
+        c2 = (e2[:-1] + e2[1:])/2
+        return wasserstein_1d(x_a=c1, x_b=c2, a=h1, b=h2, p=self.p)
+    
+    def compute_matrix(self, D):
+        num_dist = len(D)
+        H, C = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
+        M = np.zeros([num_dist, num_dist])
+        for i in range(num_dist):
+            for j in range(i+1, num_dist):
+                M[i,j] = wasserstein_1d(x_a=C[i], x_b=C[j], a=H[i], b=H[j], p=self.p)
                 M[j,i] = M[i,j]
         return M
 
@@ -101,67 +135,21 @@ class EuclideanDistance(BaseEstimator, TransformerMixin):
     
     def compute_matrix(self, D):
         H, _ = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
-        return pairwise_distances(np.vstack(H))
-    
-class AgglomerativeCover(BaseEstimator, TransformerMixin):
-
-    def __init__(self, n_patches=10, threshold=1.):
-        self.n_patches, self.threshold = n_patches, threshold
-        self.mode = "metric"
-
-    def compute_cover(self, M):
-
-        # Partition data with agglomerative clustering
-        agg = AgglomerativeClustering(n_clusters=self.n_patches, linkage="single", affinity="precomputed").fit(M)
-        binned_data = {i: [] for i in range(self.n_patches)}
-        for idx, lab in enumerate(agg.labels_):
-            binned_data[lab].append(idx)
-
-        # Thicken clusters so that they overlap
-        for i in range(self.n_patches):
-            pts_cluster, pts_others = np.reshape(np.argwhere(np.array(agg.labels_) == i), [-1]), np.reshape(np.argwhere(np.array(agg.labels_) != i), [-1])
-            pts_in_offset = pts_others[np.reshape(np.argwhere(M[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-            for p in pts_in_offset:
-                binned_data[i].append(p)
-
-        return binned_data
-
-class BallCover(BaseEstimator, TransformerMixin):
-
-    def __init__(self, radius=1.):
-        self.radius = radius
-        self.mode = "metric"
-
-    def compute_cover(self, M):
-        num_pts = M.shape[0]
-        binned_data = {}
-        n_patch, integrated_pts, centers = 0, [], []
-        while len(integrated_pts) < num_pts:
-            if len(centers) == 0:
-                new_center = 0
-            else:
-                left = np.setdiff1d(np.arange(num_pts), np.array(centers))
-                new_center = left[np.argmax(np.sum(M[left, :][:, np.array(centers)], axis=1), axis=0)]
-            centers.append(new_center)
-            ball_pts = np.argwhere(M[new_center,:] <= self.radius)
-            ball = np.squeeze(ball_pts) if ball_pts.shape[0] > 1 else ball_pts[0,:]  
-            binned_data[n_patch] = ball
-            integrated_pts = np.unique(np.concatenate([integrated_pts, ball])) 
-            n_patch += 1
-
-        return binned_data
+        return euclidean_distances(np.vstack(H))
 
 class VoronoiCover(BaseEstimator, TransformerMixin):
 
     def __init__(self, n_patches=10, threshold=1.):
-        self.n_patches, self.threshold = n_patches, threshold
+
+        self.n_patches = n_patches
+        self.threshold = threshold
         self.mode = "metric"
 
-    def compute_cover(self, M):
+    def compute_cover(self, D):
 
         # Partition data with Voronoi cover
-        germs = np.random.choice(M.shape[0], self.n_patches, replace=False)
-        labels = np.argmin(M[germs,:], axis=0)
+        germs = np.random.choice(D.shape[0], self.n_patches, replace=False)
+        labels = np.argmin(D[germs,:], axis=0)
         binned_data = {}
         for i, l in enumerate(labels):
             try:
@@ -170,19 +158,23 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
                 binned_data[l] = [i]
 
         # Thicken clusters so that they overlap
-        for i in binned_data.keys():
-            pts_cluster, pts_others = np.reshape(np.argwhere(labels == i), [-1]), np.reshape(np.argwhere(labels != i), [-1])
-            
-            pts_in_offset = pts_others[np.reshape(np.argwhere(M[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-            for p in pts_in_offset:
-                binned_data[i].append(p)
+        if self.threshold > 0:
+            for i in binned_data.keys():
+                pts_cluster, pts_others = np.reshape(np.argwhere(labels == i), [-1]), np.reshape(np.argwhere(labels != i), [-1])
+                pts_in_offset = pts_others[np.reshape(np.argwhere(D[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
+                for p in pts_in_offset:
+                    binned_data[i].append(p)
 
         return binned_data
 
 class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
 
-    def __init__(self, n_patches=10, threshold=1., histo=True, num_bins=10, bnds=(0,1)):
-        self.n_patches, self.threshold = n_patches, threshold
+    def __init__(self, n_patches=10, 
+                       threshold=1., distances=None,
+                       histo=True, num_bins=10, bnds=(0,1)):
+
+        self.n_patches = n_patches
+        self.threshold, self.distances = threshold, distances
         self.histo, self.n_bins, self.bnds = histo, num_bins, bnds
         self.mode = "embedding"
 
@@ -196,8 +188,6 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
         else:
             Y = D
 
-        DY = pairwise_distances(Y)
-
         # Euclidean KMeans on histograms
         km = KMeans(n_clusters=self.n_patches).fit(Y)
         binned_data = {}
@@ -208,18 +198,90 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
                 binned_data[l] = [i]
 
         # Thicken clusters so that they overlap
-        for i in binned_data.keys():
-            pts_cluster, pts_others = np.reshape(np.argwhere(km.labels_ == i), [-1]), np.reshape(np.argwhere(km.labels_ != i), [-1])
-            pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-            for p in pts_in_offset:
-                binned_data[i].append(p)
+        if self.threshold > 0:
+            DY = self.distances if self.distances is not None else euclidean_distances(Y)
+            for i in binned_data.keys():
+                pts_cluster, pts_others = np.reshape(np.argwhere(km.labels_ == i), [-1]), np.reshape(np.argwhere(km.labels_ != i), [-1])
+                pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
+                for p in pts_in_offset:
+                    binned_data[i].append(p)
 
         return binned_data
 
+class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_patches=10, epsilon=1e-4, p=1, 
+                       threshold=1., distances=None,
+                       histo=True, num_bins=10, bnds=(0,1)):
+
+        self.n_patches, self.epsilon, self.p = n_patches, epsilon, p
+        self.threshold, self.distances = threshold, distances
+        self.histo, self.n_bins, self.bnds = histo, num_bins, bnds
+        self.mode = "embedding"
+
+    def compute_cover(self, D):
+        
+        # Compute histograms
+        if self.histo:
+            num_dist = len(D)
+            Y, C = Histogram(num_bins=self.n_bins, bnds=self.bnds).compute_histograms(D)
+            Y = np.vstack(Y)
+        else:
+            Y, C = D[0], D[1]
+
+        cost = np.abs(np.reshape(C[i],[-1,1])-np.reshape(C[j],[1,-1]))
+        curr_patches = Y[np.random.choice(np.arange(len(Y)), size=self.n_patches, replace=False), :]
+        criterion = np.inf
+        while criterion > self.tolerance:
+            dists = np.zeros([len(curr_patches), len(Y)])
+            for i in range(len(curr_patches)):
+                for j in range(len(Y)):
+                    dists[i,j] = wasserstein_1d(x_a=C[0], x_b=C[0], a=curr_patches[i,:], b=Y[j,:], p=1)
+            Q = np.argmin(dists.T, axis=1)
+            new_curr_patches = []
+            for t in range(self.n_patches):
+                if len(np.argwhere(Q==t)) > 0:
+                    new_curr_patches.append(np.reshape(barycenter(A=Y[np.argwhere(Q==t)[:,0],:].T, M=cost, reg=self.epsilon), [1,-1]))
+                else:
+                    new_curr_patches.append(curr_patches[t:t+1,:])
+            new_curr_patches = np.vstack(new_curr_patches)
+            criterion = np.sqrt(np.square(new_curr_patches - curr_patches).sum(axis=1)).max(axis=0)
+            curr_patches = new_curr_patches
+
+        binned_data = {}
+        for i in range(len(Q)):
+            try:
+                binned_data[Q[i]].append(i)
+            except KeyError:
+                binned_data[Q[i]] = [i]
+
+        # Thicken clusters so that they overlap
+        if self.threshold > 0:
+            if self.distances is not None:
+                DY = self.distances
+            else:
+                DY = DY = np.zeros([len(Y), len(Y)])
+                for i in range(len(Y)):
+                    for j in range(i+1, len(Y)):
+                        DY[i,j] = wasserstein_1d(x_a=C[0], x_b=C[0], a=Y[i,:], b=Y[j,:], p=1)
+                        DY[j,i] = DY[i,j]
+            for i in binned_data.keys():
+                pts_cluster, pts_others = np.reshape(np.argwhere(Q == i), [-1]), np.reshape(np.argwhere(Q != i), [-1])
+                pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
+                for p in pts_in_offset:
+                    binned_data[i].append(p)
+
+        return binned_data
+
+
 class kPDTMCover(BaseEstimator, TransformerMixin):
 
-    def __init__(self, n_patches=10, h=10, threshold=1., tol=1e-4, histo=True, num_bins=10, bnds=(0,1)):
-        self.n_patches, self.threshold, self.h, self.tolerance = n_patches, threshold, h, tol
+    def __init__(self, n_patches=10, h=10, tol=1e-4, 
+                       threshold=1., distances=None,
+                       histo=True, num_bins=10, bnds=(0,1)):
+
+        self.n_patches, self.h, self.tolerance = n_patches, h, tol
+        self.threshold, self.distances = threshold, distances
         self.histo, self.n_bins, self.bnds = histo, num_bins, bnds
         self.mode = "embedding"
 
@@ -263,7 +325,7 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
                 binned_data[Q[i]] = [i]
 
         # Thicken clusters so that they overlap
-        DY = pairwise_distances(Y)
+        DY = self.distances if self.distances is not None else euclidean_distances(Y)
         for i in binned_data.keys():
             pts_cluster, pts_others = np.reshape(np.argwhere(Q == i), [-1]), np.reshape(np.argwhere(Q != i), [-1])
             pts_in_offset = pts_others[np.reshape(np.argwhere(DY[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
@@ -273,56 +335,42 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
         return binned_data
 
 class StochasticMapperComplex(BaseEstimator, TransformerMixin):
-    """
-    This is a class for computing Mapper simplicial complexes on point clouds or distance matrices. 
-    """
-    def __init__(self, distributions, colors, cover=AgglomerativeCover, distance=EntropyRegularizedWasserstein, inp="point cloud", clustering=DBSCAN(), mask=0):
-        """
-        Constructor for the MapperComplex class.
 
-        Attributes:
-            inp (string): either "point cloud" or "distance matrix". Specifies the type of input data.
-            distributions (list (of length num_points) of lists of floats): Probability distributions associated to each input points.
-            distance (function): Distance used to compute probability distributions.
-            distance_params (dict): Dictionary that contains distance parameters.
-            colors (numpy array of shape (num_points) x (num_colors)): functions used to color the nodes of the output Mapper simplicial complex. More specifically, coloring is done by computing the means of these functions on the subpopulations corresponding to each node.
-            clustering (class): clustering class (default sklearn.cluster.DBSCAN()). Common clustering classes can be found in the scikit-learn library (such as AgglomerativeClustering for instance).
-            mask (int): threshold on the size of the Mapper nodes (default 0). Any node associated to a subpopulation with less than **mask** points will be removed.
-
-            mapper_ (gudhi SimplexTree): Mapper simplicial complex computed after calling the fit() method
-            node_info_ (dictionary): various information associated to the nodes of the Mapper. 
-        """
-        self.distributions, self.distance, self.colors, self.clustering = distributions, distance, colors, clustering
-        self.cover, self.input, self.mask = cover, inp, mask
+    def __init__(self, filters, colors, codomain="distributions", infer_distributions=True, threshold=1.,  
+                       cover=VoronoiCover, distance=EntropyRegularizedWasserstein, 
+                       domain="point cloud", clustering=DBSCAN(), 
+                       mask=0):
+        
+        self.filters, self.codomain, self.infdist, self.threshold = filters, codomain, infer_distributions, threshold
+        self.cover, self.distance = cover, distance
+        self.domain, self.clustering = domain, clustering
+        self.mask, self.colors = mask, colors
 
     def fit(self, X, y=None):
-        """
-        Fit the MapperComplex class on a point cloud or a distance matrix: compute the Mapper and store it in a simplex tree called mapper_
 
-        Parameters:
-            X (numpy array of shape (num_points) x (num_coordinates) if point cloud and (num_points) x (num_points) if distance matrix): input point cloud or distance matrix.
-            y (n x 1 array): point labels (unused).
-        """
-        num_pts, num_colors = X.shape[0], self.colors.shape[1]
+        num_pts, num_colors = len(X), self.colors.shape[1]
 
-        # Compute pairwise distances in codomain
-        if type(self.distance) is np.ndarray:
-            codomain_distances = self.distance
-        else:
-            codomain_distances = np.zeros([num_pts, num_pts])
-            for i in range(num_pts):
-                #print(i)
-                for j in range(i+1, num_pts):
-                    codomain_distances[i,j] = self.distance.compute_distance(self.distributions[i], self.distributions[j])
-                    #print(self.distributions[i], self.distributions[j])
-                    #print(codomain_distances[i,j])
-                    codomain_distances[j,i] = codomain_distances[i,j]
+        if self.codomain == "distributions":
+            if self.infdist:
+                # self.filters is supposed to be a list containing a single realization of each conditional
+                distributions = infer_distributions_from_neighborhood(self.filters, X, self.threshold, self.domain)
+            else:
+                # self.filters is supposed to be a list of lists containing the distribution of each conditional
+                distributions = self.filters
+        if self.codomain == "distance matrix":
+            # self.filters is supposed to be a square array of pairwise distances
+            codomain_distances = self.filters
+
+
+        if self.cover.mode == "metric":
+            if self.codomain is not "distance matrix":
+                codomain_distances = self.distance.compute_matrix(distributions)
 
         # Compute cover
         if self.cover.mode == "metric":
             binned_data = self.cover.compute_cover(codomain_distances)
         if self.cover.mode == "embedding":
-            binned_data = self.cover.compute_cover(self.distributions)
+            binned_data = self.cover.compute_cover(distributions)
 
         # Initialize the cover map, that takes a point and outputs the clusters to which it belongs
         cover, clus_base = [[] for _ in range(num_pts)], 0
@@ -336,7 +384,7 @@ class StochasticMapperComplex(BaseEstimator, TransformerMixin):
             # Apply clustering on the corresponding subpopulation
             idxs = np.array(binned_data[preimage])
             if len(idxs) > 1:
-                clusters = self.clustering.fit_predict(X[idxs,:]) if self.input == "point cloud" else self.clustering.fit_predict(X[idxs,:][:,idxs])
+                clusters = self.clustering.fit_predict(X[idxs,:]) if self.domain == "point cloud" else self.clustering.fit_predict(X[idxs,:][:,idxs])
             elif len(idxs) == 1:
                 clusters = np.array([0])
             else:
@@ -367,3 +415,34 @@ class StochasticMapperComplex(BaseEstimator, TransformerMixin):
         self.mapper_.initialize_filtration()
 
         return self
+
+class MeanStochasticMapperComplex(BaseEstimator, TransformerMixin):
+
+    def __init__(self, filters, colors, infer_distributions=True, threshold=1.,  
+                       resolution=10, gain=.3,
+                       domain="point cloud", clustering=DBSCAN(), 
+                       mask=0):
+        
+        self.filters, self.infdist, self.threshold = filters, infer_distributions, threshold
+        self.resolution, self.gain = resolution, gain
+        self.domain, self.clustering = domain, clustering
+        self.mask, self.colors = mask, colors
+
+    def fit(self, X, y=None):
+
+        num_pts, num_colors = len(X), self.colors.shape[1]
+
+        if self.infdist:
+            # self.filters is supposed to be a list containing a single realization of each conditional
+            distributions = infer_distributions_from_neighborhood(self.filters, X, self.threshold, self.domain)
+        else:
+            # self.filters is supposed to be a list of lists containing the distribution of each conditional
+            distributions = self.filters
+
+        flt = np.reshape([np.mean(distrib) for distrib in distributions], [-1,1])
+
+        mapper = sktda.MapperComplex(filters=flt, filter_bnds=np.array([[np.nan, np.nan]]), 
+                                     resolutions=np.array([self.resolution]), gains=np.array([self.gain]), 
+                                     clustering=self.clustering, colors=self.colors, mask=self.mask, inp=self.domain).fit(X)
+
+        return mapper
