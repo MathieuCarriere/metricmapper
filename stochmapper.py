@@ -34,6 +34,24 @@ def infer_distributions_from_neighborhood(real, X, threshold=1., domain="point c
         distributions.append([real[n] for n in distrib])
     return distributions
 
+class GaussianKernel(BaseEstimator, TransformerMixin):
+
+    def __init__(self, h=1.):
+        self.h = h
+    def compute_kernel_matrix(self, X):
+        DX = euclidean_distances(X)
+        return np.exp(-np.square(DX)/(self.h*self.h))
+
+def infer_means_from_Nadaraya_Watson(real, X, kernel=GaussianKernel(h=1), eta=1., domain="point cloud"):
+    num_pts, means, dims = len(X), [], []
+    #pdist = X if domain == "distance matrix" else pairwise_distances(X)
+    kmat  = kernel.compute_kernel_matrix(X)
+    for i in range(num_pts):
+    #    n1, n2 = len(np.argwhere(pdist[i,:] <= eta)), len(np.argwhere(pdist[i,:] <= 2*eta) )
+    #    dims.append( int( 0.5 + (np.log(n2/num_pts)-np.log(n1/num_pts))/np.log(2))
+        means.append( np.multiply(np.array(real), kmat[i,:]).sum() / kmat[i,:].sum()  )
+    return means
+
 class Histogram(BaseEstimator, TransformerMixin):
 
     def __init__(self, num_bins=10, bnds=(np.nan, np.nan)):
@@ -502,12 +520,12 @@ class StochasticMapperComplex(BaseEstimator, TransformerMixin):
 
 class MeanStochasticMapperComplex(BaseEstimator, TransformerMixin):
 
-    def __init__(self, filters, colors, infer_distributions=True, threshold=1.,  
+    def __init__(self, filters, colors, infer_distributions=True, threshold=1., method="NN", h=1.,
                        resolution=10, gain=.3,
                        domain="point cloud", clustering=DBSCAN(), 
                        mask=0):
         
-        self.filters, self.infdist, self.threshold = filters, infer_distributions, threshold
+        self.filters, self.infdist, self.threshold, self.method, self.h = filters, infer_distributions, threshold, method, h
         self.resolution, self.gain = resolution, gain
         self.domain, self.clustering = domain, clustering
         self.mask, self.colors = mask, colors
@@ -516,14 +534,17 @@ class MeanStochasticMapperComplex(BaseEstimator, TransformerMixin):
 
         num_pts, num_colors = len(X), self.colors.shape[1]
 
-        if self.infdist:
-            # self.filters is supposed to be a list containing a single realization of each conditional
-            distributions = infer_distributions_from_neighborhood(self.filters, X, self.threshold, self.domain)
-        else:
-            # self.filters is supposed to be a list of lists containing the distribution of each conditional
-            distributions = self.filters
+        if self.method == "NN":
+            if self.infdist:
+                # self.filters is supposed to be a list containing a single realization of each conditional
+                distributions = infer_distributions_from_neighborhood(self.filters, X, self.threshold, self.domain)
+            else:
+                # self.filters is supposed to be a list of lists containing the distribution of each conditional
+                distributions = self.filters
+            flt = np.reshape([np.mean(distrib) for distrib in distributions], [-1,1])
 
-        flt = np.reshape([np.mean(distrib) for distrib in distributions], [-1,1])
+        if self.method == "NY":
+            flt = np.reshape(np.array(infer_means_from_Nadaraya_Watson(self.filters, X, kernel=GaussianKernel(h=self.h), domain="point cloud")), [-1,1])
 
         mapper = sktda.MapperComplex(filters=flt, filter_bnds=np.array([[np.nan, np.nan]]), 
                                      resolutions=np.array([self.resolution]), gains=np.array([self.gain]), 
