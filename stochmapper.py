@@ -150,11 +150,11 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
 
         # Thicken clusters so that they overlap
         if self.threshold > 0:
-            for i in self.binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(labels == i), [-1]), np.reshape(np.argwhere(labels != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(D[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    self.binned_data[i].append(p)
+            DX = D[:, self.germs]
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                self.binned_data[Di[i,1]].append(Di[i,0])
 
         return self
 
@@ -169,11 +169,11 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
 
         # Thicken clusters so that they overlap
         if self.threshold > 0:
-            for i in binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(labels == i), [-1]), np.reshape(np.argwhere(labels != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(D[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    binned_data[i].append(p)
+            DX = D[:, self.germs]
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                binned_data[Di[i,1]].append(Di[i,0])
 
         return binned_data
 
@@ -199,12 +199,11 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
 
         # Thicken clusters so that they overlap
         if self.threshold > 0:
-            DX = euclidean_distances(X)
-            for i in self.binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(self.km.labels_ == i), [-1]), np.reshape(np.argwhere(self.km.labels_ != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    self.binned_data[i].append(p)
+            DX = euclidean_distances(X, self.km.cluster_centers_)
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                self.binned_data[Di[i,1]].append(Di[i,0])
 
         return self
     
@@ -220,12 +219,11 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
                 binned_data[l] = [i]
 
         if self.threshold > 0:
-            DX = euclidean_distances(X)
-            for i in binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(L == i), [-1]), np.reshape(np.argwhere(L != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    binned_data[i].append(p)
+            DX = euclidean_distances(X, self.km.cluster_centers_)
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                binned_data[Di[i,1]].append(Di[i,0])
         
         return binned_data
 
@@ -248,7 +246,7 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
             for i in range(len(self.curr_patches)):
                 for j in range(len(X)):
                     dists[i,j] = wasserstein_1d(x_a=self.C[0], x_b=self.C[0], a=self.curr_patches[i,:], b=X[j,:], p=1)
-            Q = np.argmin(dists.T, axis=1)
+            Q = np.argmin(dists, axis=0)
             new_curr_patches = []
             for t in range(self.n_patches):
                 if len(np.argwhere(Q==t)) > 0:
@@ -268,16 +266,11 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
 
         # Thicken clusters so that they overlap
         if self.threshold > 0:
-            DX = np.zeros([len(X), len(X)])
-            for i in range(len(X)):
-                for j in range(i+1, len(X)):
-                    DX[i,j] = wasserstein_1d(x_a=C[0], x_b=C[0], a=X[i,:], b=X[j,:], p=1)
-                    DX[j,i] = DX[i,j]
-            for i in self.binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(Q == i), [-1]), np.reshape(np.argwhere(Q != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    self.binned_data[i].append(p)
+            DX = dists.T
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                self.binned_data[Di[i,1]].append(Di[i,0])
 
         return self
 
@@ -288,7 +281,7 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
             for j in range(len(X)):
                 dists[i,j] = wasserstein_1d(x_a=self.C[0], x_b=self.C[0], a=self.curr_patches[i,:], b=X[j,:], p=1)
 
-        L = np.argmin(dists.T, axis=1)
+        L = np.argmin(dists, axis=0)
 
         binned_data = {}
         for i in range(len(L)):
@@ -298,16 +291,11 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
                 binned_data[L[i]] = [i]
 
         if self.threshold > 0:
-            DX = np.zeros([len(X), len(X)])
-            for i in range(len(X)):
-                for j in range(i+1, len(X)):
-                    DX[i,j] = wasserstein_1d(x_a=self.C[0], x_b=self.C[0], a=X[i,:], b=X[j,:], p=1)
-                    DX[j,i] = DX[i,j]
-            for i in binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(L == i), [-1]), np.reshape(np.argwhere(L != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    binned_data[i].append(p)
+            DX = dists.T
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                binned_data[Di[i,1]].append(Di[i,0])
 
         return binned_data 
 
@@ -334,7 +322,8 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
                 V = np.square(euclidean_distances(M, X[ball_idxs,:])).sum()
                 self.means.append(M)
                 self.variances.append(V)
-            Q = np.argmin(np.square(euclidean_distances(X, np.vstack(self.means))) + np.reshape(np.array(self.variances), [1,-1]), axis=1)
+            dists = np.square(euclidean_distances(X, np.vstack(self.means))) + np.reshape(np.array(self.variances), [1,-1])
+            Q = np.argmin(dists, axis=1)
             new_curr_patches = []
             for t in range(self.n_patches):
                 if len(np.argwhere(Q==t)) > 0:
@@ -353,18 +342,19 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
                 self.binned_data[Q[i]] = [i]
 
         # Thicken clusters so that they overlap
-        DX = euclidean_distances(X)
-        for i in self.binned_data.keys():
-            pts_cluster, pts_others = np.reshape(np.argwhere(Q == i), [-1]), np.reshape(np.argwhere(Q != i), [-1])
-            pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-            for p in pts_in_offset:
-                self.binned_data[i].append(p)
+        if self.threshold > 0:
+            DX = dists
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                self.binned_data[Di[i,1]].append(Di[i,0])
 
         return self
 
     def predict(self, X, y=None):
 
-        L = np.argmin(np.square(euclidean_distances(X, np.vstack(self.means))) + np.reshape(np.array(self.variances), [1,-1]), axis=1)
+        dists = np.square(euclidean_distances(X, np.vstack(self.means))) + np.reshape(np.array(self.variances), [1,-1])
+        L = np.argmin(dists, axis=1)
 
         binned_data = {}
         for i in range(len(L)):
@@ -374,12 +364,11 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
                 binned_data[L[i]] = [i]
 
         if self.threshold > 0:
-            DX = euclidean_distances(X)
-            for i in binned_data.keys():
-                pts_cluster, pts_others = np.reshape(np.argwhere(L == i), [-1]), np.reshape(np.argwhere(L != i), [-1])
-                pts_in_offset = pts_others[np.reshape(np.argwhere(DX[pts_cluster,:][:,pts_others].min(axis=0) <= self.threshold), [-1])]
-                for p in pts_in_offset:
-                    binned_data[i].append(p)
+            DX = dists
+            Dm = np.reshape(DX.min(axis=1), [-1,1])
+            Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
+            for i in range(len(Di)):
+                binned_data[Di[i,1]].append(Di[i,0])
 
         return binned_data
 
