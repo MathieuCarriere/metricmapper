@@ -154,7 +154,10 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                self.binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    self.binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    self.binned_data[Di[i,1]] = [Di[i,0]]
 
         return self
 
@@ -173,7 +176,10 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    binned_data[Di[i,1]] = [Di[i,0]]
 
         return binned_data
 
@@ -203,7 +209,10 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                self.binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    self.binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    self.binned_data[Di[i,1]] = [Di[i,0]]
 
         return self
     
@@ -223,7 +232,10 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    binned_data[Di[i,1]] = [Di[i,0]]
         
         return binned_data
 
@@ -270,7 +282,10 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                self.binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    self.binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    self.binned_data[Di[i,1]] = [Di[i,0]]
 
         return self
 
@@ -295,7 +310,10 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    binned_data[Di[i,1]] = [Di[i,0]]
 
         return binned_data 
 
@@ -347,7 +365,10 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                self.binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    self.binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    self.binned_data[Di[i,1]] = [Di[i,0]]
 
         return self
 
@@ -368,7 +389,10 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
             Dm = np.reshape(DX.min(axis=1), [-1,1])
             Di = np.argwhere( (DX <= Dm + 2*self.threshold) & (DX > Dm) )
             for i in range(len(Di)):
-                binned_data[Di[i,1]].append(Di[i,0])
+                try:
+                    binned_data[Di[i,1]].append(Di[i,0])
+                except KeyError:
+                    binned_data[Di[i,1]] = [Di[i,0]]
 
         return binned_data
 
@@ -430,7 +454,7 @@ class StochasticMapperComplex(BaseEstimator, TransformerMixin):
 
 
         if self.cover.mode == "metric":
-            if self.codomain is not "distance matrix":
+            if self.codomain != "distance matrix":
                 if self.distance.mode == "embedding" or self.distance.mode == "embedding_histogram":
                     if self.distance.mode == "embedding_histogram":
                         self.distance.C = c_embeddings
