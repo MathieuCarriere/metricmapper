@@ -722,9 +722,9 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
             kernel (class): kernel to use for the Nadaraya-Watson estimator. Must have a "compute_kernel_matrix" method. Used only if domain = "distributions", "infdist" = True and mode = "NW".
             num_bins (int): number of bins of the histograms. Used only if domain = "distributions", "infdist" = True and mode = "NW". 
             bnds (tuple of int): inf and sup limits of the histograms. If one of the two values is numpy.nan, it will be estimated from data. Used only if domain = "distributions", "infdist" = True and mode = "NW".
-            correct_Rips (bool): whether to subdivise Rips complex, see .
-            delta (float): neighborhood parameter used for computing Rips complex.
-            num_subdivisions (int): number of subdivisions on each edge of the Rips complex.
+            correct_Rips (bool): whether to subdivise Rips complex.
+            delta (float): neighborhood parameter used for computing Rips complex. Used only if correct_Rips = True.
+            num_subdivisions (int): number of subdivisions on each edge of the Rips complex. Used only if correct_Rips = True.
             cover (class): cover method to use.
             distance (class): distances to use. Used if cover=VoronoiCover.
             domain (string): specifies the input data. Either "point cloud" or "distance matrix".
