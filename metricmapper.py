@@ -283,6 +283,213 @@ class EuclideanDistance(BaseEstimator, TransformerMixin):
 # Covers for domains included in metric spaces #
 ################################################
 
+class HypercubeCover(BaseEstimator, TransformerMixin):
+    """
+    This class is for computing standard hypercube covers of Euclidean spaces. 
+    """
+    def __init__(self, bnds=[], resolutions=[], gains=[], cover_mode="", cover=[]):
+        """
+        Constructor for the VoronoiCover class.
+
+        Parameters:
+            bnds (num_filt x 2 numpy array): array of boundaries (one for each filter). Only used if cover_mode == "implicit".
+            resolutions (num_filt numpy array): array of resolutions (one for each filter). Only used if cover_mode == "implicit".
+            gains (num_filt numpy array): array of gains (one for each filter). Only used if cover_mode == "implicit".
+            cover_mode (string): Either "implicit" or "explicit". Whether the cover is defined with boundaries, resolutions and gains, or explicitly. 
+            covers ([list (size num_filt) of left endpoints, list (size num_filt) of right endpoints]): Cover. Only used if cover_mode == "explicit".
+
+        """
+        self.bnds = bnds
+        self.resolutions = resolutions
+        self.gains = gains 
+        self.mode = "embedding"
+        self.can_refine = True
+        self.cover_mode = cover_mode
+        self.cover = cover
+
+    def _compute_cover_1(self, interval_inds, intersec_inds, X):
+        num_pts, num_filters = X.shape[0], X.shape[1]
+        binned_data = {}
+        for i in range(num_pts):
+            list_preimage = []
+            for j in range(num_filters):
+                a, b = interval_inds[i,j]-1, intersec_inds[i,j]-1
+                list_preimage.append([a])
+                if b == a:
+                    list_preimage[j].append(a+1)
+                if b == a-1:
+                    list_preimage[j].append(a-1)
+            list_preimage = list(itertools.product(*list_preimage))
+            for pre_idx in list_preimage:
+                try:
+                    binned_data[pre_idx].append(i)
+                except KeyError:
+                    binned_data[pre_idx] = [i]
+        return binned_data
+
+    def _compute_cover_2(self, X):
+        num_pts, num_filters = X.shape[0], X.shape[1]
+        binned_data = {}
+        for i in range(num_pts):
+            list_preimage = []
+            for j in range(num_filters):
+                fval = X[i,j]
+                start, end = int(min(np.argwhere(np.array(self.r_int[j]) >= fval))), int(max(np.argwhere(np.array(self.l_int[j]) <= fval)))
+                list_preimage.append(list(range(start, end+1)))
+            list_preimage = list(itertools.product(*list_preimage))
+            for pre_idx in list_preimage:
+                try:
+                    binned_data[pre_idx].append(i)
+                except KeyError:
+                    binned_data[pre_idx] = [i]
+        return binned_data
+
+    def fit(self, X, y=None):
+        """
+        Fit the HypercubeCover class on a dataset, which is encoded in the dictionary self.binned_data.
+
+        Parameters:
+            X (n x d numpy array): numpy array containing the point coordinates (in the codomain).
+            y (n x 1 array): point labels (unused).
+        """
+        num_pts, num_filters = X.shape[0], X.shape[1]
+
+        if self.cover_mode == "implicit":
+            if np.all(self.gains < .5):
+                self.I_int, self.i_int = [], [] 
+                interval_inds, intersec_inds = np.empty(X.shape), np.empty(X.shape)
+                for i in range(num_filters):
+                    f, r, g = X[:,i], self.resolutions[i], self.gains[i]
+                    min_f, max_f = self.bnds[i,0], np.nextafter(self.bnds[i,1], np.inf)
+                    interval_endpoints, l = np.linspace(min_f, max_f, num=r+1, retstep=True)
+                    intersec_endpoints = []
+                    for j in range(1, len(interval_endpoints)-1):
+                        intersec_endpoints.append(interval_endpoints[j] - g*l / (2 - 2*g))
+                        intersec_endpoints.append(interval_endpoints[j] + g*l / (2 - 2*g))
+                    self.I_int.append(interval_endpoints)
+                    self.i_int.append(intersec_endpoints)
+                    interval_inds[:,i] = np.digitize(f, interval_endpoints)
+                    intersec_inds[:,i] = 0.5 * (np.digitize(f, intersec_endpoints) + 1)
+                self.binned_data = self._compute_cover_1(interval_inds, intersec_inds, X)       
+
+            else:
+                self.l_int, self.r_int = [], []
+                for i in range(num_filters):
+                    L, R = [], []
+                    f, r, g = X[:,i], self.resolutions[i], self.gains[i]
+                    min_f, max_f = self.bnds[i,0], np.nextafter(self.bnds[i,1], np.inf)
+                    interval_endpoints, l = np.linspace(min_f, max_f, num=r+1, retstep=True)
+                    for j in range(len(interval_endpoints)-1):
+                        L.append(interval_endpoints[j]   - g*l / (2 - 2*g))
+                        R.append(interval_endpoints[j+1] + g*l / (2 - 2*g))
+                    self.l_int.append(L)
+                    self.r_int.append(R)
+                self.binned_data = self._compute_cover_2(X)
+
+        elif self.cover_mode == "explicit":
+            self.l_int, self.r_int = self.cover[0], self.cover[1]
+            self.binned_data = self._compute_cover_2(X)
+
+        return self
+
+    def predict(self, X, y=None):
+        """
+        Predict the cover elements of a given dataset.
+
+        Parameters:
+            X (n x d numpy array): numpy array containing the point coordinates (in the codomain).
+            y (n x 1 array): point labels (unused).
+
+        Returns:
+            binned_data (dictionary): predictions. The keys of this dictionary are the cover elements, and their associated values are the indices of their corresponding data points.
+        """
+        num_pts, num_filters = X.shape[0], X.shape[1]
+        if self.cover == "implicit" and np.all(self.gains < .5):
+            # Compute which points fall in which patch or patch intersections 
+            interval_inds, intersec_inds = np.empty(X.shape), np.empty(X.shape)
+            for i in range(num_filters):
+                f, interval_endpoints, intersec_endpoints = X[:,i], self.I_int[i], self.i_int[i]
+                interval_inds[:,i] = np.digitize(f, interval_endpoints)
+                intersec_inds[:,i] = .5 * (np.digitize(f, intersec_endpoints) + 1)
+            binned_data = self._compute_cover_1(interval_inds, intersec_inds, X)       
+        else:
+            binned_data = self._compute_cover_2(X)
+        return binned_data
+
+    def _compute_intersections(self, hypercubes, max_number):
+        intersecs = [[], [], []]
+        for d in range(2, max_number+1):
+            for sigma in itertools.combinations(hypercubes, d):
+                S = np.hstack([np.vstack( [np.array(interval)[1:3][np.newaxis,:] for interval in cube] ) for cube in sigma])
+                I = np.hstack([np.vstack( [np.array(interval)[0:1][np.newaxis,:] for interval in cube] ) for cube in sigma])
+                SX, SY = S[:,0::2].max(axis=1), S[:,1::2].min(axis=1)
+                L = SY-SX
+                if (L>=0).sum() == SX.shape[0]:
+                    intersecs[0].append(SX[:,np.newaxis])
+                    intersecs[1].append(SY[:,np.newaxis])
+                    intersecs[2].append([tuple(I[:,s]) for s in range(I.shape[1])])
+        return [np.hstack(intersecs[0]), np.hstack(intersecs[1]), intersecs[2]]
+
+    def _check_intersections(self, XXs, YYs, IXs, IYs):
+        Xs, Ys = np.minimum(XXs, YYs), np.maximum(XXs, YYs)
+        d = Xs.shape[0]
+        Ls = np.maximum(Xs[:,np.newaxis,:], IXs[:,:,np.newaxis])
+        LI = np.equal(Ls, IXs[:,:,np.newaxis])
+        Rs = np.minimum(Ys[:,np.newaxis,:], IYs[:,:,np.newaxis])
+        RI = np.equal(Rs, IYs[:,:,np.newaxis])
+        LI, RI = ((XXs[:,np.newaxis,:] < Ls) | (XXs[:,np.newaxis,:] > Rs)), ((YYs[:,np.newaxis,:] < Ls) | (YYs[:,np.newaxis,:] > Rs))
+        LLI, RRI = (LI[0,:,:] | LI[1,:,:]), (RI[0,:,:] | RI[1,:,:])
+        Es = (LLI & RRI)
+        C1s = np.sum(Rs-Ls>=0, axis=0)
+        return (  (C1s == d) & Es  )
+
+    def _refine(self, embedding_edges, num_pts):
+        num_filters = embedding_edges[0].shape[1]
+        if self.cover_mode == "implicit":
+            if np.all(self.gains < .5):
+                cubes = []
+                for i in range(num_filters):
+                    #print(self.i_int[i], self.I_int[i])
+                    left   = [[0, self.I_int[i][0], self.i_int[i][1]]]
+                    middle = [[j/2+1, self.i_int[i][j], self.i_int[i][j+3]] for j in range(0, len(self.i_int[i])-3, 2)]
+                    right  = [[self.resolutions[i]-1, self.i_int[i][len(self.i_int[i])-2], self.I_int[i][-1]]]
+                    #print(left, middle, right)
+                    cubes.append(left + middle + right)
+            else:
+                cubes = [[ [j, self.l_int[i][j], self.r_int[i][j]] for j in range(self.resolutions[i])] for i in range(num_filters)]
+        elif self.cover_mode == "explicit":
+            cubes = [[ [j, self.l_int[i][j], self.r_int[i][j]] for j in range(len(self.l_int[i]))] for i in range(num_filters)]
+        hypercubes = itertools.product(*cubes)
+        intersecs = self._compute_intersections([hc for hc in hypercubes], 2 ** num_filters)
+        E = self._check_intersections( embedding_edges[0].T, embedding_edges[1].T, intersecs[0], intersecs[1] ).T
+        count, newpts = num_pts, [[] for e in range(len(embedding_edges[0]))]
+        for i in range(E.shape[0]):
+            sigma_indx, bindict = np.argwhere(E[i,:])[:,0], {}
+            for j in sigma_indx[::-1]:
+                sigma = intersecs[2][j]
+                known_sigma = bindict.keys()
+                new = True
+                for prev_sigma in known_sigma:
+                    if all([cov in list(prev_sigma) for cov in sigma]):
+                        new, p = False, bindict[prev_sigma]
+                        for cov in sigma:
+                            try:
+                                self.binned_data[cov].append(p)
+                            except KeyError:
+                                self.binned_data[cov] = [p]
+                if new:
+                    bindict[tuple(sigma)] = count
+                    newpts[i].append(count)
+                    for cov in sigma:
+                        try:
+                            self.binned_data[cov].append(count)
+                        except KeyError:
+                            self.binned_data[cov] = [count]
+                    count += 1
+        for k in self.binned_data.keys():
+            self.binned_data[k] = list(np.unique(self.binned_data[k]))
+        return newpts
+
 class VoronoiCover(BaseEstimator, TransformerMixin):
     """
     This class is for computing the Voronoi cover of a metric space. It randomly picks a specified number of germs, computes the associated Voronoi partition, and thicken the cells by a specified amount to create a cover. 
@@ -298,6 +505,7 @@ class VoronoiCover(BaseEstimator, TransformerMixin):
         self.num_patches = num_patches
         self.threshold = threshold
         self.mode = "metric"
+        self.can_refine = False
 
     def fit(self, D, y=None):
         """
@@ -377,6 +585,7 @@ class EuclideanKMeansCover(BaseEstimator, TransformerMixin):
         self.num_patches = num_patches
         self.threshold = threshold
         self.mode = "embedding"
+        self.can_refine = False
 
     def fit(self, X, y=None):
         """
@@ -459,6 +668,7 @@ class WassersteinKMeansCover(BaseEstimator, TransformerMixin):
         self.C, self.num_patches, self.epsilon, self.p, self.tolerance = C, num_patches, epsilon, p, tol
         self.threshold = threshold
         self.mode = "embedding_histogram"
+        self.can_refine = False
 
     def fit(self, X, y=None):
         """
@@ -562,6 +772,7 @@ class kPDTMCover(BaseEstimator, TransformerMixin):
         self.num_patches, self.h, self.tolerance = num_patches, h, tol
         self.threshold = threshold
         self.mode = "embedding"
+        self.can_refine = False
 
     def fit(self, X, y=None):
         """
@@ -670,7 +881,7 @@ class GraphClustering(BaseEstimator, TransformerMixin):
 
     def fit(self, X, y=None):
         """
-        Fit the BirthPersistenceTransform class on a dataset (this function actually does nothing but is useful when GraphClustering is included in a scikit-learn Pipeline).
+        Fit the GraphClustering class on a dataset (this function actually does nothing but is useful when GraphClustering is included in a scikit-learn Pipeline).
 
         Parameters:
             X (n x d numpy array): numpy array containing the point coordinates.
@@ -705,7 +916,7 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
     This class if for computing Mappers with codomain (i.e., filter domain) included in a metric space, using cover strategies for metric spaces instead of the standard hypercube covers.
     """
     def __init__(self, filters, colors, codomain="distributions", infer_distributions=True, mode="NN", threshold=1., kernel=GaussianKernel(h=1.), num_bins=10, bnds=(np.nan, np.nan),
-                       correct_Rips=False, delta=1., num_subdivisions=1,
+                       correct_Rips=False, delta=1., correct_mode="uniform_refinement", num_subdivisions=1,
                        cover=VoronoiCover(), distance=EuclideanDistance(), 
                        domain="point cloud", clustering=DBSCAN(), 
                        mask=0):
@@ -724,7 +935,8 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
             bnds (tuple of int): inf and sup limits of the histograms. If one of the two values is numpy.nan, it will be estimated from data. Used only if domain = "distributions", "infdist" = True and mode = "NW".
             correct_Rips (bool): whether to subdivise Rips complex.
             delta (float): neighborhood parameter used for computing Rips complex. Used only if correct_Rips = True.
-            num_subdivisions (int): number of subdivisions on each edge of the Rips complex. Used only if correct_Rips = True.
+            correct_mode (string): either "uniform_refinement" or "cover_refinement". Whether to refine each edge of the Rips complex or only those that are intersection-crossing.
+            num_subdivisions (int): number of subdivisions on each edge of the Rips complex. Used only if correct_Rips = True and correct_mode == "uniform_refinement".
             cover (class): cover method to use.
             distance (class): distances to use. Used if cover=VoronoiCover.
             domain (string): specifies the input data. Either "point cloud" or "distance matrix".
@@ -733,7 +945,7 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
         """
         self.filters, self.codomain, self.infdist, self.threshold, self.kernel, self.mode = filters, codomain, infer_distributions, threshold, kernel, mode
         self.num_bins, self.bnds = num_bins, bnds
-        self.correct_Rips, self.delta, self.num_subdivisions = correct_Rips, delta, num_subdivisions
+        self.correct_Rips, self.delta, self.correct_mode, self.num_subdivisions = correct_Rips, delta, correct_mode, num_subdivisions
         self.cover, self.distance = cover, distance
         self.domain, self.clustering = domain, clustering
         self.mask, self.colors = mask, colors
@@ -753,21 +965,21 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
                 # self.filters is supposed to be a list containing a single realization of each conditional
                 if self.mode == "NN":
                     distributions = infer_distributions_from_neighborhood(self.filters, X, self.threshold, self.domain)
-                if self.mode == "NW":
+                elif self.mode == "NW":
                     [embeddings, c_embeddings] = infer_distributions_from_Nadaraya_Watson(self.filters, X, kernel=self.kernel, means=False, num_bins=self.num_bins, bnds=self.bnds)
             else:
                 # self.filters is supposed to be a list of lists containing the distribution of each conditional
                 distributions = self.filters
             if (self.cover.mode == "embedding" or self.cover.mode == "embedding_histogram") or (self.cover.mode == "metric" and (self.distance.mode == "embedding" or self.distance.mode == "embedding_histogram")):
                 # Compute histograms if necessary
-                if self.mode == "NN":
+                if self.infdist == False or (self.infdist ==True and self.mode == "NN"):
                     embeddings, c_embeddings = Histogram(num_bins=self.num_bins, bnds=self.bnds).fit_transform(distributions)
                     embeddings = np.vstack(embeddings)
-        if self.codomain == "distance matrix":
+        elif self.codomain == "distance matrix":
             # self.filters is supposed to be a square array of pairwise distances
             codomain_distances = self.filters
 
-        if self.codomain == "vectors":
+        elif self.codomain == "vectors":
             # self.filters is supposed to be an array of vectors
             embeddings = self.filters
 
@@ -784,9 +996,9 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
         # Compute cover
         if self.cover.mode == "metric":
             self.cover.fit(codomain_distances)
-        if self.cover.mode == "embedding":
+        elif self.cover.mode == "embedding":
             self.cover.fit(embeddings)
-        if self.cover.mode == "embedding_histogram":
+        elif self.cover.mode == "embedding_histogram":
             self.cover.C = c_embeddings
             self.cover.fit(embeddings)
 
@@ -794,30 +1006,49 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
 
         if self.correct_Rips and (self.cover.mode == "embedding" or self.cover.mode == "embedding_histogram"):
 
-            DX = np.triu(euclidean_distances(X), k=1)
-            edges, ndiv = np.argwhere((DX <= self.delta) & (DX > 0)), self.num_subdivisions
-            new_points = []
-            AA = lil_matrix((num_pts + edges.shape[0] * ndiv, num_pts + edges.shape[0] * ndiv))
-            for i in range(len(edges)):
-                new_points.append(np.linspace(embeddings[edges[i,0],:], embeddings[edges[i,1],:], ndiv+2)[1:-1,:])
-                AA[num_pts + ndiv*i, edges[i,0]], AA[edges[i,0], num_pts + ndiv*i], AA[num_pts + ndiv*i + ndiv-1, edges[i,1]], AA[edges[i,1], num_pts + ndiv*i + ndiv-1] = 1, 1, 1, 1
-                if ndiv > 1:
-                    AA[num_pts + ndiv*i, num_pts + ndiv*i + 1], AA[num_pts + ndiv*i + 1, num_pts + ndiv*i] = 1, 1
-                    AA[num_pts + ndiv*i + ndiv-1, num_pts + ndiv*i + ndiv-2], AA[num_pts + ndiv*i + ndiv-2, num_pts + ndiv*i + ndiv-1] = 1, 1
-                    for k in range(1, ndiv-1):
-                        AA[num_pts + ndiv*i + k, num_pts + ndiv*i + k-1] = 1
-                        AA[num_pts + ndiv*i + k-1, num_pts + ndiv*i + k] = 1
-                        AA[num_pts + ndiv*i + k, num_pts + ndiv*i + k+1] = 1
-                        AA[num_pts + ndiv*i + k+1, num_pts + ndiv*i + k] = 1
+            DX = np.triu(euclidean_distances(X), k=1) if self.domain == "point cloud" else X
+            edges = np.argwhere((DX <= self.delta) & (DX > 0))
 
-            new_points = np.vstack(new_points)
-            new_binned_data = self.cover.predict(new_points)
-            for i in binned_data.keys():
-                binned_data[i] = binned_data[i] + [num_pts + pt for pt in new_binned_data[i]]
-            num_pts += edges.shape[0] * ndiv
+            if self.correct_mode == "uniform_refinement":
+                ndiv = self.num_subdivisions
+                new_points = []
+                AA = lil_matrix((num_pts + edges.shape[0] * ndiv, num_pts + edges.shape[0] * ndiv))
+                for i in range(len(edges)):
+                    new_points.append(np.linspace(embeddings[edges[i,0],:], embeddings[edges[i,1],:], ndiv+2)[1:-1,:])
+                    AA[num_pts + ndiv*i, edges[i,0]], AA[edges[i,0], num_pts + ndiv*i], AA[num_pts + ndiv*i + ndiv-1, edges[i,1]], AA[edges[i,1], num_pts + ndiv*i + ndiv-1] = 1, 1, 1, 1
+                    if ndiv > 1:
+                        AA[num_pts + ndiv*i, num_pts + ndiv*i + 1], AA[num_pts + ndiv*i + 1, num_pts + ndiv*i] = 1, 1
+                        AA[num_pts + ndiv*i + ndiv-1, num_pts + ndiv*i + ndiv-2], AA[num_pts + ndiv*i + ndiv-2, num_pts + ndiv*i + ndiv-1] = 1, 1
+                        for k in range(1, ndiv-1):
+                            AA[num_pts + ndiv*i + k, num_pts + ndiv*i + k-1] = 1
+                            AA[num_pts + ndiv*i + k-1, num_pts + ndiv*i + k] = 1
+                            AA[num_pts + ndiv*i + k, num_pts + ndiv*i + k+1] = 1
+                            AA[num_pts + ndiv*i + k+1, num_pts + ndiv*i + k] = 1
+
+                new_points = np.vstack(new_points)
+                new_binned_data = self.cover.predict(new_points)
+                for i in binned_data.keys():
+                    binned_data[i] = binned_data[i] + [num_pts + pt for pt in new_binned_data[i]]
+                num_pts += edges.shape[0] * ndiv
+                self.colors = np.vstack([self.colors, np.zeros([num_pts + edges.shape[0] * ndiv, self.colors.shape[1]])])
+
+            elif self.correct_mode == "cover_refinement" and self.cover.can_refine:
+                new_points = self.cover._refine( [embeddings[edges[:,0],:], embeddings[edges[:,1],:]], num_pts )
+                npts = sum([len(gr) for gr in new_points])
+                AA = lil_matrix((num_pts + npts, num_pts + npts))
+                for idx, gr in enumerate(new_points):
+                    if len(gr) > 0:
+                        idxs = [edges[idx,0]] + gr + [edges[idx,1]]
+                        for idd in range(len(idxs)-1):
+                            AA[idxs[idd], idxs[idd+1]] = 1
+                    else:
+                        AA[edges[idx,0], edges[idx,1]] = 1
+                binned_data = self.cover.binned_data
+                num_pts += npts
+                self.colors = np.vstack([self.colors, np.zeros([num_pts + npts, self.colors.shape[1]])])
+
             self.clustering = GraphClustering(AA)
             self.domain = "indices"
-            self.colors = np.vstack([self.colors, np.zeros([num_pts + edges.shape[0] * ndiv, self.colors.shape[1]])])
 
         # Initialize the cover map, that takes a point and outputs the clusters to which it belongs
         cover, clus_base = [[] for _ in range(num_pts)], 0
