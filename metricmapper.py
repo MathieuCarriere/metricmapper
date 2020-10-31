@@ -924,21 +924,21 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
         Constructor for the MetricMapperComplex class.
 
         Parameters:
-            filters (n x n numpy array or n x d numpy array or list of (lists of) floats): filter information. It is either a pairwise distance matrix (if domain = "distance matrix"), a matrix containing the filter value coordinates (if domain = "vectors"), or a list of probability distribution samplings or single observations (if domain = "distributions").
+            filters (n x n numpy array or n x d numpy array or list of (lists of) floats): filter information. It is either a pairwise distance matrix (if codomain = "distance matrix"), a matrix containing the filter value coordinates (if codomain = "vectors"), or a list of probability distribution samplings or single observations (if codomain = "distributions").
             colors (n x num_colors numpy array): color functions used to visualize the Mapper nodes. 
-            codomain (string): specifies filter domain. Either "distance matrix" when only distance matrices in the filter domain are known, "vectors" when the domain is Euclidean space, or "distributions" when the domain is the space of conditional probability distributions.
-            infer_distributions (bool): whether to infer conditional probability distributions from single observations. Used only if domain = "distributions".
-            mode (string): specifies how to infer distributions. Either using balls ("NN") or Nadaraya-Watson kernel estimator ("NW"). Used only if domain = "distributions" and "infdist" = True.
-            threshold (float): radius of the balls centered on the points for inferring distributions. Used only if domain = "distributions", "infdist" = True and mode = "NN".
-            kernel (class): kernel to use for the Nadaraya-Watson estimator. Must have a "compute_kernel_matrix" method. Used only if domain = "distributions", "infdist" = True and mode = "NW".
-            num_bins (int): number of bins of the histograms. Used only if domain = "distributions", "infdist" = True and mode = "NW". 
-            bnds (tuple of int): inf and sup limits of the histograms. If one of the two values is numpy.nan, it will be estimated from data. Used only if domain = "distributions", "infdist" = True and mode = "NW".
-            correct_Rips (bool): whether to subdivise Rips complex.
+            codomain (string): specifies filter domain. Either "distance matrix" when only distance matrices in the codomain are known, "vectors" when the codomain is Euclidean space, or "distributions" when the codomain is the space of conditional probability distributions.
+            infer_distributions (bool): whether to infer conditional probability distributions from single observations. Used only if codomain = "distributions".
+            mode (string): specifies how to infer distributions. Either using balls ("NN") or Nadaraya-Watson kernel estimator ("NW"). Used only if codomain = "distributions" and "infdist" = True.
+            threshold (float): radius of the balls centered on the points for inferring distributions. Used only if codomain = "distributions", "infdist" = True and mode = "NN".
+            kernel (class): kernel to use for the Nadaraya-Watson estimator. Must have a "compute_kernel_matrix" method. Used only if codomain = "distributions", "infdist" = True and mode = "NW".
+            num_bins (int): number of bins of the histograms. Used only if codomain = "distributions", "infdist" = True and mode = "NW". 
+            bnds (tuple of int): inf and sup limits of the histograms. If one of the two values is numpy.nan, it will be estimated from data. Used only if codomain = "distributions", "infdist" = True and mode = "NW".
+            correct_Rips (bool): whether to subdivide Rips complex.
             delta (float): neighborhood parameter used for computing Rips complex. Used only if correct_Rips = True.
             correct_mode (string): either "uniform_refinement" or "cover_refinement". Whether to refine each edge of the Rips complex or only those that are intersection-crossing.
             num_subdivisions (int): number of subdivisions on each edge of the Rips complex. Used only if correct_Rips = True and correct_mode == "uniform_refinement".
             cover (class): cover method to use.
-            distance (class): distances to use. Used if cover=VoronoiCover.
+            distance (class): distances to use. Used if cover.mode="metric" and codomain is not "distance matrix".
             domain (string): specifies the input data. Either "point cloud" or "distance matrix".
             clustering (class): clustering class (default sklearn.cluster.DBSCAN()). Common clustering classes can be found in the scikit-learn library (such as AgglomerativeClustering for instance).
             mask (int): threshold on the size of the Mapper nodes. Any node associated to a subpopulation with number of points less than this value will be removed.
@@ -990,7 +990,7 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
                     if self.distance.mode == "embedding_histogram":
                         self.distance.C = c_embeddings
                     codomain_distances = self.distance.compute_matrix(embeddings)
-                if self.distance.mode == "distributions":
+                elif self.distance.mode == "distributions":
                     codomain_distances = self.distance.compute_matrix(distributions)
 
         # Compute cover
