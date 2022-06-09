@@ -4,6 +4,7 @@ All rights reserved
 """
 import matplotlib.pyplot as plt
 import numpy as np
+import networkx as nx
 import itertools
 
 from sklearn.base             import BaseEstimator, TransformerMixin
@@ -25,7 +26,55 @@ except ImportError:
     print("Gudhi not found: MetricMapperComplex will not work")
 
 
+def estimate_scale(X, N=100, inp="point cloud", beta=0., C=10.):
+    """
+    Compute estimated scale of a point cloud or a distance matrix.
 
+    Parameters:
+        X (numpy array of shape (num_points) x (num_coordinates) if point cloud and (num_points) x (num_points) 
+            if distance matrix): input point cloud or distance matrix.
+        N (int): subsampling iterations (default 100). 
+        inp (string): either "point cloud" or "distance matrix". Type of input data (default "point cloud").
+        beta (double): exponent parameter (default 0.).
+        C (double): constant parameter (default 10.).
+
+    Returns:
+        delta (double): estimated scale that can be used with eg agglomerative clustering.
+    """
+    num_pts = X.shape[0]
+    delta, m = 0., int(  num_pts / np.exp((1+beta) * np.log(np.log(num_pts)/np.log(C)))  )
+    for _ in range(N):
+        subpop = np.random.choice(num_pts, size=m, replace=False)
+        if inp == "point cloud":
+            d, _, _ = directed_hausdorff(X, X[subpop,:])
+        if inp == "distance matrix":
+            d = np.max(np.min(X[:,subpop], axis=1), axis=0)
+        delta += d/N
+    return delta
+
+def mapper2networkx(M, get_attrs=False):
+    """
+    Turn the 1-skeleton of M (computed after calling fit() method) into a networkx graph.
+    This function requires networkx (https://networkx.org/documentation/stable/install.html).
+
+    Parameters:
+        M (MetricMapperComplex): simplicial complex
+        get_attrs (bool): if True, the color functions will be used as attributes for the networkx graph.
+
+    Returns:
+        G (networkx graph): graph representing the 1-skeleton of the cover complex.
+    """
+    st = M.mapper_
+    G = nx.Graph()
+    for (splx,_) in st.get_skeleton(1):
+        if len(splx) == 1:
+            G.add_node(splx[0])
+        if len(splx) == 2:
+            G.add_edge(splx[0], splx[1])
+    if get_attrs:
+        attrs = {k: {"attr_name": M.node_info[k]["colors"]} for k in G.nodes()}
+        nx.set_node_attributes(G, attrs)
+    return G
 
 
 ########################################
