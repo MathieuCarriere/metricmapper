@@ -21,7 +21,6 @@ from ot.lp                    import wasserstein_1d
 
 try:
     import gudhi as gd
-    import sklearn_tda as sktda
 except ImportError:
     print("Gudhi not found: MetricMapperComplex will not work")
 
