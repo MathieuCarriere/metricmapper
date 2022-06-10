@@ -1140,9 +1140,21 @@ class MetricMapperComplex(BaseEstimator, TransformerMixin):
 
             clus_base += np.max(clusters) + 1
 
-        # Insert the simplices of the Mapper complex 
+        # Insert the simplices of the Mapper complex
+        simplex_weight = {}
         for i in range(num_pts):
-            self.mapper_.insert(cover[i], filtration=-3)
-        self.mapper_.initialize_filtration()
+            simplex = cover[i]
+            self.mapper_.insert(simplex)
+            for dim in range(1,len(simplex)+1):
+                for face in itertools.combinations(simplex,dim):
+                    key = tuple(np.sort(face))
+                    try:
+                        simplex_weight[key] += 1
+                    except KeyError:
+                        simplex_weight[key] = 1
+
+        for s,_ in self.mapper_.get_simplices():
+            key = tuple(np.sort(s))
+            self.mapper_.assign_filtration(s, simplex_weight[key]/num_pts)
 
         return self
